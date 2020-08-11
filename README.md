@@ -15,12 +15,21 @@ NOTE: this filter seems broken when used with an fov other than 90 degrees.
 
 ## Screenshots
 
-![sharp reflections](/img/ss_sharp_fresnel.png)
-![glossy reflections](/img/ss_glossy_fresnel.png)
-![sharp reflections only](/img/ss_sharp_bare.png)
-![glossy reflections only](/img/ss_glossy_bare.png)
+![glossy reflections with high sample count](/img/ss_glossy_beauty.png)
+32 spp glossy reflections (this is the maximum sample count the filter supports, but it's not like you would be able to run it this high on almost any PC anyways)
 
-(taken using Intel Core i7 7500U integrated graphics)
+![glossy reflections](/img/ss_glossy_fresnel.png)
+4 spp glossy reflections
+
+![sharp reflections](/img/ss_sharp_fresnel.png)
+4 spp sharp reflections
+
+![glossy reflections only](/img/ss_glossy_bare.png)
+4 spp glossy reflections (reflections only)
+
+![sharp reflections only](/img/ss_sharp_bare.png)
+4 spp sharp reflections (reflections only)
+
 
 ## Credits
 
