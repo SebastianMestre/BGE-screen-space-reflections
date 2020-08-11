@@ -18,7 +18,7 @@ uniform int samples;
 
 float znear = 0.1;
 float zfar = 100.0;
-float fov = 49.1;
+float fov = 90.0;
 
 // **** **** **** ****
 
@@ -138,6 +138,8 @@ struct ShaderData {
 
 	float diffuse_f_view;
 	float diffuse_f_light;
+
+	float viewJitter;
 };
 
 // **** **** **** ****
@@ -174,32 +176,6 @@ float brdf (const ShaderData d) {
 
 	return geometry_A * geometry_B;
 }
-
-/*
-// Near blue noise.
-// Rounded to 6 digits (arbitrary choice)
-const float randomA[32] = float[](
-	0.408960, 0.089650, 0.659157, 0.090182,
-	0.692129, 0.321620, 0.438963, 0.868447,
-	0.215370, 0.698281, 0.510065, 0.596903,
-	0.282642, 0.270406, 0.087304, 0.894975,
-	0.726160, 0.705759, 0.919466, 0.149936,
-	0.237849, 0.838222, 0.871506, 0.463300,
-	0.625321, 0.907557, 0.215592, 0.063410,
-	0.471047, 0.379783, 0.088273, 0.485860
-);
-
-const float randomB[32] = float[](
-	0.197508, 0.440571, 0.915642, 0.920050,
-	0.698262, 0.438228, 0.531794, 0.398298,
-	0.091603, 0.170917, 0.888277, 0.526257,
-	0.744579, 0.267982, 0.795485, 0.884548,
-	0.567740, 0.377212, 0.556393, 0.586749,
-	0.525395, 0.637739, 0.135191, 0.088169,
-	0.791195, 0.277727, 0.890907, 0.607043,
-	0.362902, 0.855291, 0.308795, 0.698057
-);
-*/
 
 // First 4 points are the standard rotated quad AA distribution
 // Rest are halton sequence with bases 2 and 3
@@ -252,7 +228,7 @@ float rand(vec3 value){
 // PRECONDITION: Coords is a rotation matrix
 vec3 generateMicronormal(const ShaderData d, int index, mat3 coords){
 	
-	vec2 r = mod(nth_random(index) * rand(d.view), 1.0);
+	vec2 r = mod(nth_random(index) + d.viewJitter, 1.0);
 	vec2 n_polar = micronormal(d, r);
 
 // INVARIANT: n_tangentSpace is a unit vector
@@ -308,7 +284,7 @@ ShaderData make_shader_data () {
 	result.direct = getColor(fragCoord);
 	result.position = getViewPosition(fragCoord);
 	result.normal = getViewNormal(fragCoord);
-	// position is the shift from the camera to the current fragment.
+	// position is the offset from the camera to the current fragment.
 	// In particular, it points away from the camera. We want the direction
 	// from current the fragment to the camera, so we change the sign (-).
 	result.view = -normalize(result.position);
@@ -318,14 +294,19 @@ ShaderData make_shader_data () {
 
 	result.ndotv = dot(result.view, result.normal);
 
+	result.viewJitter = rand(result.view);
+
 	return result;
 }
 
 void update_shader_data (inout ShaderData result, vec3 micronormal) {
 	result.micronormal = micronormal;
 
+	// why -reflect(...)?
 	// glsl reflects vectors across a plane.
 	// We want to reflect *against* a plane
+	// or maybe i just got my math wrong.
+	// either way, it doesn't work without it.
 	result.light = -reflect(result.view, micronormal);
 
 	result.ndotl = dot(result.normal, result.light);
