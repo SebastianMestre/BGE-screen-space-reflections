@@ -1,53 +1,78 @@
-uniform sampler2D bgl_DepthTexture;
 uniform sampler2D bgl_RenderedTexture;
-
-uniform float roughness;
-uniform float reflectance;
-uniform int rays;
+uniform sampler2D bgl_DepthTexture;
 
 uniform float bgl_RenderedTextureWidth;
 uniform float bgl_RenderedTextureHeight;
 
+/**** **** **** ****/
+
 float width = bgl_RenderedTextureWidth;
 float height = bgl_RenderedTextureHeight;
 
-vec2 texCoord = gl_TexCoord[0].st;
-
+const float e = 2.71828182846;
 const float pi = 3.14159265359;
 
-//#######################################
+/**** **** **** ****/
 
-//these MUST match your current settings
-float znear = 1.0;                    // camera clipping start
-float zfar  = 20.0;                   // camera clipping end
-float fov   = 50.0;                   // check your camera settings (make sure you put a ".0" after the number)
-vec3 skycolor = vec3(0.1, 0.2, 0.2);  // use the horizon color under world properties, fallback when reflections fail
-vec3 grncolor = vec3(0.9, 0.9, 0.9);  // fake floor color, fallback when reflections fail
+// #ADD THESE PROPERTIES TO THE OWNER OF THIS FILTER
 
-//tweak these to your liking -- each comes with advantages and disadvantages
-float stepSize   = 0.01; // step size for raymarching
-int   maxsteps   = 100;  // maximum amount of steps for raymarching
-float startScale = 4.0;  // initial scale of step size for raymarching
-float depth      = 0.5;  // thickness of the world
+uniform float roughness;
+uniform float reflectance;
+uniform int samples;
 
-//#######################################
+/**** **** **** ****/
+
+// #MODIFY THESE TO CONFORM TO YOUR CAMERA
+
+float znear = 0.1;
+float zfar = 100.0;
+float fov = 49.1;
+
+/**** **** **** ****/
+
+// #TWEAK THESE TO YOUR LIKING
+
+float stepSize = 0.1;
+int sampleSteps = 100;
+int refineSteps = 3;
+/// replace with: vec4(vec3(R, G, B), 1.0) 
+vec4 skyColor = vec4(vec3(0.1), 1.0);
+
+/**** **** **** ****/
 
 float aspectratio = width / height;
-float fovratio    = 90.0  / fov;
+float fovratio = 90.0 / fov;
 
-//#######################################
+/**** **** **** ****/
 
-float getDepth(vec2 coord) {
-  float zdepth = texture2D(bgl_DepthTexture, coord).x;
-  return -zfar * znear / (zdepth * (zfar - znear) - zfar);
+float getDepth(vec2 coord){
+	float zsample = texture2D(bgl_DepthTexture, coord).x;
+	return -zfar * znear / (zsample * (zfar - znear) - zfar);
 }
+
+vec4 gammaCompress(vec4 color){
+	return pow(color, vec4(1.0 / 2.2));
+}
+
+vec4 gammaDecompress(vec4 color){
+	return pow(color, vec4(2.2));
+}
+
+vec4 getColor(vec2 coord){
+	return gammaDecompress(texture2D(bgl_RenderedTexture, coord));
+}
+
+void setColor(vec4 color){
+	gl_FragColor = gammaCompress(color);
+}
+
+/**** **** **** ****/
 
 vec3 getViewPosition(vec2 coord) {
   vec3 pos = vec3((coord.s * 2.0 - 1.0) / fovratio, (coord.t * 2.0 - 1.0) / aspectratio / fovratio, 1.0);
   return (pos * getDepth(coord));
 }
 
-/// Is this even worth the performance?
 vec3 getViewNormal(vec2 coord) {
   float pW = 1.0 / width;
   float pH = 1.0 / height;
@@ -74,7 +99,7 @@ vec3 getViewNormal(vec2 coord) {
   return normalize(cross(dx, dy));
 }
 
-vec2 getScreenCoord(vec3 pos) {
+vec2 getCoord(vec3 pos) {
   vec3 norm = pos / pos.z;
   vec2 view = vec2((norm.x * fovratio + 1.0) / 2.0, (norm.y * fovratio * aspectratio + 1.0) / 2.0);
   return view;
@@ -86,148 +111,150 @@ vec2 snapToPixel(vec2 coord) {
   return coord;
 }
 
-/* ------------------------------------------------------------------ */
+/**** **** **** ****/
 
-/// Halton low discrepancy series generator. maybe replace with something more efficient later?
-float halton(int i, int b) {
-  float f = 1.0;
-  float r = 0.0;
-  while (i > 0) {
-    f /= float(b);
-    r += f * mod(float(i), float(b));
-    i /= b;
-  }
-  return r;
+vec2 fragCoord = gl_TexCoord[0].st;
+vec2 pixelCoord = vec2(int(fragCoord.x*width),int(fragCoord.y*height));
+vec3 fragPos = getViewPosition(fragCoord);
+vec3 fragNorm = getViewNormal(fragCoord);
+vec3 fragView = normalize(fragPos);
+
+/**** **** **** ****/
+
+float getSkyAmount(vec2 coord){
+	coord *= 2;
+	coord -= 1;
+	return pow(1-(1-coord.x * coord.x) * (1-coord.y * coord.y), 5);
 }
 
-vec3 distort(vec3 vec, vec3 ref, int i, float n) {
-  vec3 z = vec;
-  vec3 y = cross(z, ref);
-  vec3 x = cross(z, y);
-
-  float ran1 = mod(halton(i, 2) + ref.x * 167.0, 1.0);
-  float ran2 = mod(halton(i, 3) + ref.y * 167.0, 1.0);
-
-  // assumes isotropic surface
-  float phi = ran2 * pi * 2.0;
-  
-  // Blinn
-  //float theta = acos(pow(ran1, 1.0 / (n + 2.0)));
-  
-  // Mestre
-  //float theta = log(ran1 / (1.0-ran1)) / n;
-  
-  // GGX
-  float theta =  acos(sqrt((1.0 - ran1) / (( roughness*roughness*roughness*roughness - 1.0) * (ran1) + 1.0)));
-  // the the standard form of GGX uses roughness^2, and not roughness^4, but a cuadratic scale is prefered by many
-    
-  float xc = sin(theta) * cos(phi);
-  float yc = sin(theta) * sin(phi);
-  float zc = cos(theta);
-
-  vec3 mod = xc * x + yc * y + zc * z;
-
-  if (dot(mod, vec) < 0.0) {
-    mod = reflect(mod, vec);
-  }
-
-  return mod;
+float fresnel(vec3 normal, vec3 incoming){
+	return reflectance + (1-reflectance) * pow(1-dot(normal, incoming), 5.0);
 }
 
-vec4 LINEARtoSRGB(vec4 c) {
-  return pow(c, vec4(2.2));
+float brdf(vec3 normal, vec3 incoming){
+	float fresnel = reflectance + (1.0 - reflectance) * pow(1-dot(normal, incoming), 5);
+	
+	float k = roughness * roughness * 0.5;
+	
+	float geometry_A = dot(normal, fragView) / (dot(normal, fragView) * (1-k) + k);
+	float geometry_B = dot(normal, incoming) / (dot(normal, incoming) * (1-k) + k);
+	return geometry_A * geometry_B * 0.25;
 }
 
-vec4 SRGBtoLINEAR(vec4 c) {
-  return pow(c, vec4(1.0 / 2.2));
+/**** **** **** ****/
+
+int RNG_state = 1337;
+int hash(int a, int b){
+	RNG_state = (RNG_state * 167) ^ a;
+	RNG_state = (RNG_state * 113) ^ b;
+	return RNG_state;
 }
 
-/* ------------------------------------------------------------------ */
-
-float schlick(float r0, vec3 n, vec3 i) {
-  return r0 + (1.0 - r0) * pow(1.0 - dot(-i, n), 5.0);
+vec3 generateMicronormal(int index){
+	vec3 Z = fragNorm;
+	vec3 X = normalize(cross(fragNorm, fragView));
+	vec3 Y = cross(X, Z);
+	
+	int xyHash = hash(int(pixelCoord.x), int(pixelCoord.y));
+	float ran1 = float(hash(xyHash, hash(index, 167))) / 2147483648.0 * 0.5 + 0.5;
+	float ran2 = float(hash(xyHash, hash(index, 113))) / 2147483648.0 * 0.5 + 0.5;
+	
+	float alpha = roughness * roughness;
+	float aa = alpha * alpha;
+	float theta = acos(sqrt((1.0 - ran2) / (( aa - 1.0) * (ran2) + 1.0)));
+	
+	float phi = ran1 * 2.0 * pi;
+	
+	return normalize(Z * cos(theta) + X * sin(theta) * cos(phi) + Y * sin(theta) * sin(phi));
 }
 
-/* ------------------------------------------------------------------ */
+/**** **** **** ****/
 
-vec3 raymarch(vec3 position, vec3 direction) {
-  direction = normalize(direction) * stepSize;
-  float stepScale = startScale;
-
-  for (int steps = 0; steps < maxsteps; steps++) {
-
-    vec3 deltapos = direction * stepScale * position.z;
-    position += deltapos;
-    vec2 screencoord = getScreenCoord(position);
-
-    bool OOB = false; // OUT OF BOUNDS
-    OOB = OOB || (screencoord.x < 0.0) || (screencoord.x > 1.0); // X
-    OOB = OOB || (screencoord.y < 0.0) || (screencoord.y > 1.0); // Y
-    OOB = OOB || (position.z >  zfar ) || (position.z <  znear); // Z
-    if (OOB) {
-      return vec3(0.0);
-    }
-
-    screencoord = snapToPixel(screencoord);
-    float penetration = length(position) - length(getViewPosition(screencoord));
-
-    if (penetration > 0.0) {
-      if (stepScale > 1.0) {
-        position -= deltapos;
-        stepScale *= 0.5;
-      } else if (penetration < depth) {
-        return position;
-      }
-    }
-  }
-  return vec3(0.0);
+vec3 raymarchRefine(vec3 position, vec3 direction){
+	for(int i = 0; i < refineSteps; i++){
+		direction *= 0.5;
+		position += direction * (position.z < getDepth(getCoord(position)) ? 1 : -1);
+	}
+	return position;
 }
 
-/* ------------------------------------------------------------------ */
-
-vec4 glossyReflection(vec3 Position, vec3 Normal, vec3 View, int rays) {
-  vec4 radiance = vec4(0.0);
-  vec4 irradiance = vec4(0.0);
-
-  float blinnExponent = pow(2.0, 15.0 * (1.0 - roughness));
-
-  for (int i = 0; i < rays; i++) {
-
-    vec3 middle      = distort(Normal, View, i + 1, blinnExponent);
-    vec3 omega       = reflect(View, middle);
-    vec3 collision   = raymarch(Position, omega);
-    vec2 screenCoord = getScreenCoord(collision);
-
-    irradiance = SRGBtoLINEAR(texture2D(bgl_RenderedTexture, screenCoord));
-
-    float backamount = max(abs(screenCoord.x - 0.5), abs(screenCoord.y - 0.5));
-    backamount = pow(backamount * 2.0, 5.0) * 1.5 - 0.25;
-
-    if (collision.z == 0.0) {
-      backamount = 1.0;
-    }
-
-    radiance += mix(irradiance, SRGBtoLINEAR(vec4(skycolor, 1.0)) * (pi/2.0), backamount) / float(rays);
-  }
-  
-  return radiance;
+vec4 raymarch(vec3 position, vec3 direction){
+	
+	direction *= stepSize;
+	
+	position += direction;
+	
+	vec3 oldPosition = position;
+	float oldDepth = position.z;
+	float oldDelta = 0.0;
+	
+	float thickness = direction.z + 0.01;
+	
+	for(int i = 0; i < sampleSteps; i++){
+		vec2 screenCoord = getCoord(position);
+		
+		float depth = getDepth(screenCoord);
+		float delta = position.z - depth;
+		
+		if(screenCoord.x < 0.0 || screenCoord.x > 1.0
+		|| screenCoord.y < 0.0 || screenCoord.y > 1.0
+		|| position.z  < znear || position.z  >  zfar){
+			return skyColor;
+		}
+		
+		if(delta > 0.0){
+			float skyAmount = getSkyAmount(screenCoord);
+			vec4 color;
+			
+			if(delta < thickness){
+				position = raymarchRefine(position, direction);
+				color = getColor(getCoord(position));
+			}else if(depth - oldDepth > thickness){
+				float blend = (oldDelta - delta) / max(oldDelta, delta) * 0.5 + 0.5;
+				color = mix(getColor(getCoord(oldPosition)), getColor(getCoord(position)), blend);
+			}
+			
+			return mix(color, skyColor, skyAmount);
+		}else{
+			oldDelta = -delta;
+			oldPosition = position;
+		}
+	oldDepth = depth;
+	position += direction;
+	}
+	return skyColor;
+	
 }
 
-/* ------------------------------------------------------------------ */
+/**** **** **** ****/
 
-void main() {
-  //fragment geometry data
-  vec3 position = getViewPosition(texCoord);
-  vec3 normal = getViewNormal(texCoord);
-  vec3 view = normalize(position);
+vec4 glossyReflection(){
+	vec4 radiance = vec4(0.0);
+	float fresnelSum = 0.0;
+	for(int i = 0; i < samples; i++){
+		
+		vec3 micronormal = generateMicronormal(i);
+		vec3 incoming = reflect(fragView, micronormal);
+		
+		float fresnelValue = fresnel(micronormal, incoming);
+		fresnelSum += fresnelValue;
+		
+		radiance += raymarch(fragPos, incoming) * fresnelValue * brdf(micronormal, incoming) / float(samples);
+		
+	}
+	
+	radiance.w = fresnelSum;
+	
+	return radiance;
+}
 
-  //fragment shading data
-  float reflectivity = schlick(reflectance, normal, view);
+/**** **** **** ****/
 
-  //fragment color data
-  vec4 image = texture2D(bgl_RenderedTexture, texCoord);
-
-  vec4 direct = SRGBtoLINEAR(image);
-  vec4 reflection = glossyReflection(position, normal, view, rays);
-
-  gl_FragColor = LINEARtoSRGB(mix(dir
+void main(){
+	
+	vec4 direct = getColor(fragCoord);
+	vec4 reflection = glossyReflection();
+	
+	setColor(reflection + direct * (1-reflection.w));
+	setColor(reflection);
+}
