@@ -10,6 +10,7 @@ uniform float bgl_RenderedTextureHeight;
 
 uniform float roughness;
 uniform float reflectance;
+uniform int samples;
 
 // **** **** **** ****
 
@@ -23,9 +24,9 @@ float fov = 49.1;
 
 // #TWEAK THESE TO YOUR LIKING
 
-const float stepSize = 0.05; // stride of cast rays (in blender units)
-const int sampleSteps = 128; // maxmimum amount of steps that a ray can take
-const int samples = 4;       // amount of rays fired per pixel
+const float stepSize = 0.01; // stride of cast rays (in blender units)
+const int sampleSteps = 50; // maxmimum amount of steps that a ray can take
+// const int samples = 4;       // amount of rays fired per pixel
 /// replace with: vec4(R, G, B, 1.0)
 const vec4 skyColor = vec4(0.3, 0.5, 0.9, 1.0);
 
@@ -174,28 +175,55 @@ float brdf (const ShaderData d) {
 	return geometry_A * geometry_B;
 }
 
-// Random numbers generated in a roughly blue noise pattern
-// We should offset them using the screen coordinate somehow too.
+/*
+// Near blue noise.
+// Rounded to 6 digits (arbitrary choice)
 const float randomA[32] = float[](
-	0.4089603577439599f, 0.0896500312892546f, 0.6591577972340148f, 0.0901822232642283f,
-	0.6921296572717603f, 0.3216206881285436f, 0.4389636225233531f, 0.8684473781706337f,
-	0.2153705165450234f, 0.6982811052424471f, 0.5100657509892909f, 0.5969037419749239f,
-	0.2826421637434830f, 0.2704069270277116f, 0.0873047035801428f, 0.8949758675200112f,
-	0.7261603311075456f, 0.7057593639689843f, 0.9194667339198013f, 0.1499367709685910f,
-	0.2378494703557717f, 0.8382222073990692f, 0.8715069738124827f, 0.4633002657457567f,
-	0.6253217355093506f, 0.9075575210336372f, 0.2155927354335262f, 0.0634106216410736f,
-	0.4710479453603139f, 0.3797833814840630f, 0.0882737220335973f, 0.4858608023695249f
+	0.408960, 0.089650, 0.659157, 0.090182,
+	0.692129, 0.321620, 0.438963, 0.868447,
+	0.215370, 0.698281, 0.510065, 0.596903,
+	0.282642, 0.270406, 0.087304, 0.894975,
+	0.726160, 0.705759, 0.919466, 0.149936,
+	0.237849, 0.838222, 0.871506, 0.463300,
+	0.625321, 0.907557, 0.215592, 0.063410,
+	0.471047, 0.379783, 0.088273, 0.485860
 );
 
 const float randomB[32] = float[](
-	0.1975087128742691f, 0.4405716101214095f, 0.9156427590642274f, 0.9200501479117965f,
-	0.6982629029626343f, 0.4382289145146980f, 0.5317940570208527f, 0.3982982871121937f,
-	0.0916033464809752f, 0.1709175437251112f, 0.8882776771492672f, 0.5262574787690367f,
-	0.7445798767371159f, 0.2679827983148667f, 0.7954851945416024f, 0.8845487120051808f,
-	0.5677403489172201f, 0.3772120625497965f, 0.5563936974545356f, 0.5867492760166948f,
-	0.5253957565511908f, 0.6377394716383505f, 0.1351919077676108f, 0.0881696515152218f,
-	0.7911953140212018f, 0.2777270195798199f, 0.8909074535773583f, 0.6070434630706817f,
-	0.3629028841433275f, 0.8552917189293238f, 0.3087955852440492f, 0.6980571771861915f
+	0.197508, 0.440571, 0.915642, 0.920050,
+	0.698262, 0.438228, 0.531794, 0.398298,
+	0.091603, 0.170917, 0.888277, 0.526257,
+	0.744579, 0.267982, 0.795485, 0.884548,
+	0.567740, 0.377212, 0.556393, 0.586749,
+	0.525395, 0.637739, 0.135191, 0.088169,
+	0.791195, 0.277727, 0.890907, 0.607043,
+	0.362902, 0.855291, 0.308795, 0.698057
+);
+*/
+
+// First 4 points are the standard rotated quad AA distribution
+// Rest are halton sequence with bases 2 and 3
+// Everything is rounded to 6 digits (arbitrary choice)
+const float randomA[32] = float[](
+	0.625000,0.375000,0.125000,0.875000,
+	0.937500,0.031250,0.531250,0.281250,
+	0.781250,0.156250,0.656250,0.406250,
+	0.906250,0.093750,0.593750,0.343750,
+	0.843750,0.218750,0.718750,0.468750,
+	0.968750,0.015625,0.515625,0.265625,
+	0.765625,0.140625,0.640625,0.390625,
+	0.890625,0.078125,0.578125,0.328125
+);
+
+const float randomB[32] = float[](
+	0.125000,0.875000,0.375000,0.625000,
+	0.259259,0.592593,0.925926,0.074074,
+	0.407407,0.740741,0.185185,0.518519,
+	0.851852,0.296296,0.629630,0.962963,
+	0.012346,0.345679,0.679012,0.123457,
+	0.456790,0.790123,0.234568,0.567901,
+	0.901235,0.049383,0.382716,0.716049,
+	0.160494,0.493827,0.827160,0.271605
 );
 
 vec2 nth_random (int n) {
@@ -243,13 +271,28 @@ vec3 generateMicronormal(const ShaderData d, int index, mat3 coords){
 
 vec3 raymarch ( vec3 position, vec3 direction ) {
 	direction = normalize(direction);
+
+	const float epsilon = 0.001;
+	float jitterAmount = epsilon + rand(direction) * 0.01;
+
+	vec3 e = position + direction;
+	vec3 ep = e / e.z;
+	vec3 pp = position / position.z;
+	vec3 dp = ep - pp;
+	vec3 dp0 = normalize(dp);
     
 	for (int i = 0; i < sampleSteps; ++i) {
-		vec2 screenCoord = getCoord(position);
-		if (position.z > getDepth(screenCoord)) {
+		float rayLen = jitterAmount + i * stepSize;
+		vec3 sp = pp + dp0 * rayLen;
+		float t = - cross(sp,position).z / cross(sp,direction).z;
+
+		// @@ We should be able to compute both rayEnd and screenCoord at once
+		vec3 rayEnd = position + direction * t;
+		vec2 screenCoord = getCoord(rayEnd);
+		float delta = rayEnd.z - getDepth(screenCoord);
+		if (delta > 0.0f && delta < 1.0f) {
 			return getColor(screenCoord).xyz;
 		}
-		position += direction * stepSize;
 	}
 
     return skyColor.xyz;
