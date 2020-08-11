@@ -21,7 +21,8 @@ const float pi = 3.14159265359;
 float znear = 1.0;                    // camera clipping start
 float zfar  = 20.0;                   // camera clipping end
 float fov   = 50.0;                   // check your camera settings (make sure you put a ".0" after the number)
-vec3 skycolor = vec3(0.4, 0.7, 0.9);  // use the horizon color under world properties, fallback when reflections fail
+vec3 skycolor = vec3(0.1, 0.2, 0.2);  // use the horizon color under world properties, fallback when reflections fail
+vec3 grncolor = vec3(0.9, 0.9, 0.9);  // fake floor color, fallback when reflections fail
 
 //tweak these to your liking -- each comes with advantages and disadvantages
 float stepSize   = 0.01; // step size for raymarching
@@ -92,9 +93,9 @@ float halton(int i, int b) {
   float f = 1.0;
   float r = 0.0;
   while (i > 0) {
-    f = f / float(b);
-    r = r + f * float(mod(i, b));
-    i = i / b;
+    f /= float(b);
+    r += f * mod(float(i), float(b));
+    i /= b;
   }
   return r;
 }
@@ -104,13 +105,22 @@ vec3 distort(vec3 vec, vec3 ref, int i, float n) {
   vec3 y = cross(z, ref);
   vec3 x = cross(z, y);
 
-  float ran1 = halton(i, 2);
-  float ran2 = halton(i, 3);
+  float ran1 = mod(halton(i, 2) + ref.x * 167.0, 1.0);
+  float ran2 = mod(halton(i, 3) + ref.y * 167.0, 1.0);
 
-  // formulas for the Blinn NDF
+  // assumes isotropic surface
   float phi = ran2 * pi * 2.0;
-  float theta = acos(pow(ran1, 1.0 / (n + 2.0)));
-
+  
+  // Blinn
+  //float theta = acos(pow(ran1, 1.0 / (n + 2.0)));
+  
+  // Mestre
+  //float theta = log(ran1 / (1.0-ran1)) / n;
+  
+  // GGX
+  float theta =  acos(sqrt((1.0 - ran1) / (( roughness*roughness*roughness*roughness - 1.0) * (ran1) + 1.0)));
+  // the the standard form of GGX uses roughness^2, and not roughness^4, but a cuadratic scale is prefered by many
+    
   float xc = sin(theta) * cos(phi);
   float yc = sin(theta) * sin(phi);
   float zc = cos(theta);
@@ -179,27 +189,28 @@ vec4 glossyReflection(vec3 Position, vec3 Normal, vec3 View, int rays) {
   vec4 radiance = vec4(0.0);
   vec4 irradiance = vec4(0.0);
 
-  float blinnExponent = pow(2.0, 10.0 * (1.0 - roughness));
+  float blinnExponent = pow(2.0, 15.0 * (1.0 - roughness));
 
   for (int i = 0; i < rays; i++) {
 
-    vec3 middle      = distort(Normal, vec3(0.0, 0.0, 1.0), i + 1, blinnExponent);
+    vec3 middle      = distort(Normal, View, i + 1, blinnExponent);
     vec3 omega       = reflect(View, middle);
     vec3 collision   = raymarch(Position, omega);
     vec2 screenCoord = getScreenCoord(collision);
 
     irradiance = SRGBtoLINEAR(texture2D(bgl_RenderedTexture, screenCoord));
 
-    float skyamount = max(abs(screenCoord.x - 0.5), abs(screenCoord.y - 0.5));
-    skyamount = pow(skyamount * 2.0, 5.0) * 1.5 - 0.25;
+    float backamount = max(abs(screenCoord.x - 0.5), abs(screenCoord.y - 0.5));
+    backamount = pow(backamount * 2.0, 5.0) * 1.5 - 0.25;
 
     if (collision.z == 0.0) {
-      skyamount = 1.0;
+      backamount = 1.0;
     }
 
-    radiance += mix(irradiance, SRGBtoLINEAR(vec4(skycolor, 1.0)), skyamount);
+    radiance += mix(irradiance, SRGBtoLINEAR(vec4(skycolor, 1.0)) * (pi/2.0), backamount) / float(rays);
   }
-  return radiance / rays;
+  
+  return radiance;
 }
 
 /* ------------------------------------------------------------------ */
@@ -219,5 +230,4 @@ void main() {
   vec4 direct = SRGBtoLINEAR(image);
   vec4 reflection = glossyReflection(position, normal, view, rays);
 
-  gl_FragColor = LINEARtoSRGB(mix(direct, reflection, reflectivity));
-}
+  gl_FragColor = LINEARtoSRGB(mix(dir
