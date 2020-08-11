@@ -1,6 +1,10 @@
 uniform sampler2D bgl_DepthTexture;
 uniform sampler2D bgl_RenderedTexture;
 
+uniform float roughness;
+uniform float reflectance;
+uniform int rays;
+
 uniform float bgl_RenderedTextureWidth;
 uniform float bgl_RenderedTextureHeight;
 
@@ -9,108 +13,211 @@ float height = bgl_RenderedTextureHeight;
 
 vec2 texCoord = gl_TexCoord[0].st;
 
+const float pi = 3.14159265359;
+
 //#######################################
+
 //these MUST match your current settings
-float znear = 1.0;                      //camera clipping start
-float zfar = 50.0;                      //camera clipping end
-float fov = 90.0 / 90.0;                //check your camera settings, set this to (90.0 / fov) (make sure you put a ".0" after your number)
-float aspectratio = 16.0/9.0;           //width / height (make sure you put a ".0" after your number)
-vec3 skycolor = vec3(0.01,0.03,0.07);   // use the horizon color under world properties, fallback when reflections fail
+float znear = 1.0;                    // camera clipping start
+float zfar  = 20.0;                   // camera clipping end
+float fov   = 50.0;                   // check your camera settings (make sure you put a ".0" after the number)
+vec3 skycolor = vec3(0.4, 0.7, 0.9);  // use the horizon color under world properties, fallback when reflections fail
 
-//tweak these to your liking
-float reflectance = 0.04;    //reflectivity of surfaced that you face head-on
-float stepSize = 0.03;      //reflection choppiness, the lower the better the quality, and worse the performance 
-int samples = 100;          //reflection distance, the higher the better the quality, and worse the performance
-float startScale = 4.0;     //first value for variable scale calculations, the higher this value is, the faster the filter runs but it gets you staircase edges, make sure it is a power of 2
+//tweak these to your liking -- each comes with advantages and disadvantages
+float stepSize   = 0.01; // step size for raymarching
+int   maxsteps   = 100;  // maximum amount of steps for raymarching
+float startScale = 4.0;  // initial scale of step size for raymarching
+float depth      = 0.5;  // thickness of the world
 
 //#######################################
 
-float getDepth(vec2 coord){
-    float zdepth = texture2D(bgl_DepthTexture,coord).x;
-    return -zfar * znear / (zdepth * (zfar - znear) - zfar);
+float aspectratio = width / height;
+float fovratio    = 90.0  / fov;
+
+//#######################################
+
+float getDepth(vec2 coord) {
+  float zdepth = texture2D(bgl_DepthTexture, coord).x;
+  return -zfar * znear / (zdepth * (zfar - znear) - zfar);
 }
 
-vec3 getViewPosition(vec2 coord){
-    vec3 pos = vec3((coord.s * 2.0 - 1.0) / fov, (coord.t * 2.0 - 1.0) / aspectratio / fov, 1.0);
-    return (pos * getDepth(coord));
+vec3 getViewPosition(vec2 coord) {
+  vec3 pos = vec3((coord.s * 2.0 - 1.0) / fovratio, (coord.t * 2.0 - 1.0) / aspectratio / fovratio, 1.0);
+  return (pos * getDepth(coord));
 }
 
-vec3 getViewNormal(vec2 coord){
-    
-    vec3 p0 = getViewPosition(coord);
-    vec3 p1 = getViewPosition(coord + vec2(1.0 / width, 0.0));
-    vec3 p2 = getViewPosition(coord + vec2(0.0, 1.0 / height));
-  
-    vec3 dx = p1 - p0;
-    vec3 dy = p2 - p0;
-    return normalize(cross( dy , dx ));
+/// Is this even worth the performance?
+vec3 getViewNormal(vec2 coord) {
+  float pW = 1.0 / width;
+  float pH = 1.0 / height;
+
+  vec3 p1  = getViewPosition(coord + vec2(pW, 0.0)).xyz;
+  vec3 p2  = getViewPosition(coord + vec2(0.0, pH)).xyz;
+  vec3 p3  = getViewPosition(coord + vec2(-pW, 0.0)).xyz;
+  vec3 p4  = getViewPosition(coord + vec2(0.0, -pH)).xyz;
+
+  vec3 vP  = getViewPosition(coord);
+
+  vec3 dx  = vP - p1;
+  vec3 dy  = p2 - vP;
+  vec3 dx2 = p3 - vP;
+  vec3 dy2 = vP - p4;
+
+  if (length(dx2) < length(dx) && coord.x - pW >= 0.0 || coord.x + pW > 1.0) {
+    dx = dx2;
+  }
+  if (length(dy2) < length(dy) && coord.y - pH >= 0.0 || coord.y + pH > 1.0) {
+    dy = dy2;
+  }
+
+  return normalize(cross(dx, dy));
 }
 
-vec2 getViewCoord(vec3 pos){
-    vec3 norm = pos / pos.z;
-    vec2 view = vec2((norm.x / fov + 1.0) / 2.0, (norm.y / fov * aspectratio + 1.0) / 2.0);
-    return view;
+vec2 getScreenCoord(vec3 pos) {
+  vec3 norm = pos / pos.z;
+  vec2 view = vec2((norm.x * fovratio + 1.0) / 2.0, (norm.y * fovratio * aspectratio + 1.0) / 2.0);
+  return view;
 }
 
-float lenCo(vec3 vector){
-    return pow(pow(vector.x,2.0) + pow(vector.y,2.0) + pow(vector.z,2.0), 0.5);
+vec2 snapToPixel(vec2 coord) {
+  coord.x = (floor(coord.x *  width) + 0.5) /  width;
+  coord.y = (floor(coord.y * height) + 0.5) / height;
+  return coord;
 }
 
-vec3 rayTrace(vec3 startpos, vec3 dir){
-    vec3 pos = startpos;
-    float olz = pos.z;      //previous z
-    float scl = startScale; //step scale
-    vec2 psc;               // Pixel Space Coordinate of the ray's' current viewspace position 
-    vec3 ssg;               // Screen Space coordinate of the existing Geometry at that pixel coordinate
-    
-    for(int i = 0; i < samples; i++){
-        olz = pos.z; //previous z
-        pos = pos + dir * stepSize * pos.z * scl;
-        psc = getViewCoord(pos); 
-        ssg = getViewPosition(psc); 
-        if(psc.x < 0.0 || psc.x > 1.0 || psc.y < 0.0 || psc.y > 1.0 || pos.z < 0.0 || pos.z >= zfar){
-            //out of bounds
-            break;
-        }
-        if(scl == 1 && lenCo(pos) > lenCo(ssg) && lenCo(pos) - lenCo(ssg) < stepSize * 40){
-            //collided
-            return pos;
-        }
-        if(scl > 1 && lenCo(pos) - lenCo(ssg) > stepSize * scl * -1){
-            //lower step scale
-            pos = pos - dir * stepSize * olz * scl;
-            scl = scl * 0.5;
-        }
+/* ------------------------------------------------------------------ */
+
+/// Halton low discrepancy series generator. maybe replace with something more efficient later?
+float halton(int i, int b) {
+  float f = 1.0;
+  float r = 0.0;
+  while (i > 0) {
+    f = f / float(b);
+    r = r + f * float(mod(i, b));
+    i = i / b;
+  }
+  return r;
+}
+
+vec3 distort(vec3 vec, vec3 ref, int i, float n) {
+  vec3 z = vec;
+  vec3 y = cross(z, ref);
+  vec3 x = cross(z, y);
+
+  float ran1 = halton(i, 2);
+  float ran2 = halton(i, 3);
+
+  // formulas for the Blinn NDF
+  float phi = ran2 * pi * 2.0;
+  float theta = acos(pow(ran1, 1.0 / (n + 2.0)));
+
+  float xc = sin(theta) * cos(phi);
+  float yc = sin(theta) * sin(phi);
+  float zc = cos(theta);
+
+  vec3 mod = xc * x + yc * y + zc * z;
+
+  if (dot(mod, vec) < 0.0) {
+    mod = reflect(mod, vec);
+  }
+
+  return mod;
+}
+
+vec4 LINEARtoSRGB(vec4 c) {
+  return pow(c, vec4(2.2));
+}
+
+vec4 SRGBtoLINEAR(vec4 c) {
+  return pow(c, vec4(1.0 / 2.2));
+}
+
+/* ------------------------------------------------------------------ */
+
+float schlick(float r0, vec3 n, vec3 i) {
+  return r0 + (1.0 - r0) * pow(1.0 - dot(-i, n), 5.0);
+}
+
+/* ------------------------------------------------------------------ */
+
+vec3 raymarch(vec3 position, vec3 direction) {
+  direction = normalize(direction) * stepSize;
+  float stepScale = startScale;
+
+  for (int steps = 0; steps < maxsteps; steps++) {
+
+    vec3 deltapos = direction * stepScale * position.z;
+    position += deltapos;
+    vec2 screencoord = getScreenCoord(position);
+
+    bool OOB = false; // OUT OF BOUNDS
+    OOB = OOB || (screencoord.x < 0.0) || (screencoord.x > 1.0); // X
+    OOB = OOB || (screencoord.y < 0.0) || (screencoord.y > 1.0); // Y
+    OOB = OOB || (position.z >  zfar ) || (position.z <  znear); // Z
+    if (OOB) {
+      return vec3(0.0);
     }
-    // this will only run if loop ends before return or after break statement
-    return vec3(0.0, 0.0, 0.0);
-}
-float schlick(float r0, vec3 n, vec3 i){
-    return r0 + (1.0 - r0) * pow(1.0 - dot(-i,n),5.0);
+
+    screencoord = snapToPixel(screencoord);
+    float penetration = length(position) - length(getViewPosition(screencoord));
+
+    if (penetration > 0.0) {
+      if (stepScale > 1.0) {
+        position -= deltapos;
+        stepScale *= 0.5;
+      } else if (penetration < depth) {
+        return position;
+      }
+    }
+  }
+  return vec3(0.0);
 }
 
-void main(){
-    
-    //fragment color data
-    vec4 direct = texture2D(bgl_RenderedTexture, texCoord);
-    vec4 reflection;
-    
-    //fragment geometry data
-    vec3 position = getViewPosition(texCoord);
-    vec3 normal   = getViewNormal(texCoord);
-    vec3 viewVec  = normalize(position);
-    vec3 reflect  = reflect(viewVec,normal);
-    
-    //raytrace collision
-    vec3 collision = rayTrace(position, reflect);
-    
-    //choose method
-    if(collision.z != 0.0){
-        vec2 sample = getViewCoord(collision);
-        reflection  = texture2D(bgl_RenderedTexture,sample);
-    }else{
-        reflection.rgb = pow(skycolor,vec3(1,1,1)*(0.455));
+/* ------------------------------------------------------------------ */
+
+vec4 glossyReflection(vec3 Position, vec3 Normal, vec3 View, int rays) {
+  vec4 radiance = vec4(0.0);
+  vec4 irradiance = vec4(0.0);
+
+  float blinnExponent = pow(2.0, 10.0 * (1.0 - roughness));
+
+  for (int i = 0; i < rays; i++) {
+
+    vec3 middle      = distort(Normal, vec3(0.0, 0.0, 1.0), i + 1, blinnExponent);
+    vec3 omega       = reflect(View, middle);
+    vec3 collision   = raymarch(Position, omega);
+    vec2 screenCoord = getScreenCoord(collision);
+
+    irradiance = SRGBtoLINEAR(texture2D(bgl_RenderedTexture, screenCoord));
+
+    float skyamount = max(abs(screenCoord.x - 0.5), abs(screenCoord.y - 0.5));
+    skyamount = pow(skyamount * 2.0, 5.0) * 1.5 - 0.25;
+
+    if (collision.z == 0.0) {
+      skyamount = 1.0;
     }
-    
-    gl_FragColor = mix(direct, reflection, schlick(reflectance, normal, viewVec));
+
+    radiance += mix(irradiance, SRGBtoLINEAR(vec4(skycolor, 1.0)), skyamount);
+  }
+  return radiance / rays;
+}
+
+/* ------------------------------------------------------------------ */
+
+void main() {
+  //fragment geometry data
+  vec3 position = getViewPosition(texCoord);
+  vec3 normal = getViewNormal(texCoord);
+  vec3 view = normalize(position);
+
+  //fragment shading data
+  float reflectivity = schlick(reflectance, normal, view);
+
+  //fragment color data
+  vec4 image = texture2D(bgl_RenderedTexture, texCoord);
+
+  vec4 direct = SRGBtoLINEAR(image);
+  vec4 reflection = glossyReflection(position, normal, view, rays);
+
+  gl_FragColor = LINEARtoSRGB(mix(direct, reflection, reflectivity));
 }
